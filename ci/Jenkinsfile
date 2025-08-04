@@ -12,8 +12,8 @@ pipeline {
   }
 
   options {
-    disableConcurrentBuilds()
-    buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
+      disableConcurrentBuilds()
+      buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
   }
 
   environment {
@@ -60,10 +60,10 @@ pipeline {
             ls -la target/
           '''
         }
-        post {
-          always {
-            publishTestResults testResultsPattern: 'app/target/surefire-reports/*.xml'
-          }
+      }
+      post {
+        always {
+          publishTestResults testResultsPattern: 'app/target/surefire-reports/*.xml'
         }
       }
     }
@@ -86,6 +86,9 @@ pipeline {
     }
 
     stage("Update ArgoCD Application") {
+      // This stage only runs for main branch builds (production deployments)
+      // It updates the ArgoCD Application spec in the deploy repository with the new image tag
+      // ArgoCD monitors this repo and will automatically sync the new image to production
       when { 
         allOf {
           expression { params.UPDATE_ARGOCD }
@@ -120,7 +123,8 @@ pipeline {
               Build: ${BUILD_NUMBER}
               Commit: ${GIT_COMMIT_HASH}
               Branch: ${BRANCH_NAME}
-              Image: ${IMAGE_REPO}:${IMAGE_TAG}"
+              Image: ${IMAGE_REPO}:${IMAGE_TAG}
+              "
               
               git push https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets-Deploy.git main
               
@@ -134,6 +138,9 @@ pipeline {
     }
 
     stage("PR Build Info") {
+      // This stage runs only for Pull Request builds to provide information about preview deployments
+      // PR preview environments are optional and only created when 'preview' label is added to the PR
+      // The ApplicationSet monitors PRs with 'preview' label and automatically creates/destroys environments
       when { 
         allOf {
           expression { params.RUN_IMAGE_BUILD }

@@ -97,8 +97,11 @@ pipeline {
       }
       steps {
         withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
-          container("git") {
+          container("kubectl-helm") {
             sh '''
+              # First check if git is available
+              which git || (echo "Git not found in kubectl-helm container" && exit 1)
+              
               echo "Updating ArgoCD application with image tag: ${IMAGE_TAG}"
               echo "This implements GitOps workflow by updating the deployment repository"
               echo "ArgoCD monitors this repo and will automatically deploy the new image"

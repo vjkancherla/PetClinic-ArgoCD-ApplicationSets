@@ -24,29 +24,34 @@ pipeline {
     
     // ArgoCD deployment repository
     DEPLOY_REPO = "https://github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets-Deploy.git"
-    
-    // Dynamic image tag based on build type
-    // Jenkins automatically sets CHANGE_ID for Pull Request builds
-    // CHANGE_ID = PR number (e.g., "123") when build triggered by PR
-    // CHANGE_ID = null for regular branch builds
-    IMAGE_TAG = script {
-      if (env.CHANGE_ID) {
-        // PR build: CHANGE_ID contains PR number
-        // Results in: pr-123-abc12345
-        return "pr-${env.CHANGE_ID}-${GIT_COMMIT_HASH_SHORT}"
-      } else if (env.BRANCH_NAME == 'main') {
-        // Main branch build: standard production tagging
-        // Results in: main-45-abc12345
-        return "main-${BUILD_NUMBER}-${GIT_COMMIT_HASH_SHORT}"
-      } else {
-        // Feature branch build: include branch name
-        // Results in: feature/auth-45-abc12345
-        return "${env.BRANCH_NAME}-${BUILD_NUMBER}-${GIT_COMMIT_HASH_SHORT}"
-      }
-    }()
   }
 
   stages {
+    stage("Set Image Tag") {
+      steps {
+        script {
+          // Dynamic image tag based on build type
+          // Jenkins automatically sets CHANGE_ID for Pull Request builds
+          // CHANGE_ID = PR number (e.g., "123") when build triggered by PR
+          // CHANGE_ID = null for regular branch builds
+          if (env.CHANGE_ID) {
+            // PR build: CHANGE_ID contains PR number
+            // Results in: pr-123-abc12345
+            env.IMAGE_TAG = "pr-${env.CHANGE_ID}-${env.GIT_COMMIT_HASH_SHORT}"
+          } else if (env.BRANCH_NAME == 'main') {
+            // Main branch build: standard production tagging
+            // Results in: main-45-abc12345
+            env.IMAGE_TAG = "main-${BUILD_NUMBER}-${env.GIT_COMMIT_HASH_SHORT}"
+          } else {
+            // Feature branch build: include branch name
+            // Results in: feature/auth-45-abc12345
+            env.IMAGE_TAG = "${env.BRANCH_NAME}-${BUILD_NUMBER}-${env.GIT_COMMIT_HASH_SHORT}"
+          }
+          echo "Image tag set to: ${env.IMAGE_TAG}"
+        }
+      }
+    }
+
     stage("Maven Build & Test") {
       when { expression { params.RUN_BUILD } }
       steps {

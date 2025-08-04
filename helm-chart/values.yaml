@@ -1,0 +1,13 @@
+# Default values for petclinic
+replicaCount: 1
+
+image:
+  # These will be dynamically updated by CI pipeline
+  repository: vjkancherla/petclinic  # Updated to match your IMAGE_REPO
+  tag: latest                        # Will be replaced with commit hash
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080

@@ -1,0 +1,32 @@
+services:
+  jenkins:
+    image: bitnami/jenkins:2.504.1
+    container_name: jenkins-docker
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins-data:/bitnami/jenkins/home
+    environment:
+      - TZ=Europe/London
+    networks:
+      mycluster:
+        ipv4_address: 172.19.0.6
+    restart: unless-stopped
+
+# Using Volumes instead of bind-mounts due to slow performace
+volumes:
+  jenkins-data:
+    driver: local
+    name: jenkins-data
+    labels:
+      - "purpose=jenkins-production"
+      - "backup=required"
+      - "project=ci-cd"
+      - "environment=local-dev"
+      - "created-by=docker-compose"
+
+networks:
+  mycluster:
+    external: true
+    name: k3d-mycluster

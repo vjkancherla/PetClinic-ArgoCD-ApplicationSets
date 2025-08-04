@@ -1,0 +1,1 @@
+See [INSTALL-ARGOCD](../infrastructure/argocd/README.md)

@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jenkins-agent
+  namespace: jenkins
+spec:
+  nodeSelector:
+    # Ensure pods run on agent node where volumes (see k3d-volumes.md) are mounted
+    kubernetes.io/hostname: k3d-mycluster-agent-0
+  containers:
+  - name: jnlp
+    image: jenkins/inbound-agent:latest
+    args: ['$(JENKINS_SECRET)', '$(JENKINS_NAME)']
+    volumeMounts:
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+        
+  - name: maven
+    image: maven:alpine
+    command:
+    - cat
+    tty: true
+    volumeMounts:
+      - name: maven-cache
+        mountPath: /root/.m2
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command:
+    - sleep
+    args:
+    - 9999999
+    tty: true
+    volumeMounts:
+      - name: kaniko-secret
+        mountPath: /kaniko/.docker
+      - name: kaniko-cache
+        mountPath: /cache
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+
+  - name: kubectl-helm
+    image: alpine/k8s:1.26.6
+    command:
+    - cat
+    tty: true
+    env:
+    - name: KUBECONFIG
+      value: /home/jenkins/agent/kubeconfig
+    volumeMounts:
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+
+  volumes:
+  - name: workspace-volume
+    emptyDir: {}
+  - name: maven-cache
+    persistentVolumeClaim:
+      claimName: jenkins-maven-cache-pvc
+  - name: kaniko-cache
+    persistentVolumeClaim:
+      claimName: jenkins-kaniko-cache-pvc
+  - name: kaniko-secret
+    secret:
+      secretName: docker-credentials
+      items:
+      - key: .dockerconfigjson
+        path: config.json

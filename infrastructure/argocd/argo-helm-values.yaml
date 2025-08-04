@@ -1,0 +1,43 @@
+configs:
+  secret:
+    argocdServerAdminPassword: "$2a$12$HVcvMuPb6K9e1rCRJqEOPeHmWm58fWG/jz9qkTq9lO02nyfQ3JquO" #this val resolves to "admin"
+
+controller:
+  metrics:
+    serviceMonitor:
+      enabled: false
+  resources:
+    requests:
+      cpu: 10m
+      memory: 50Mi
+
+repoServer:
+  metrics:
+    serviceMonitor:
+      enabled: false
+
+server:
+  metrics:
+    serviceMonitor:
+      enabled: false
+  resources:
+    requests:
+      cpu: 10m
+      memory: 50Mi
+
+redis:
+  metrics:
+    serviceMonitor:
+      enabled: false
+  resources:
+    limits:
+      cpu: 10m
+      memory: 50Mi
+    requests:
+      cpu: 10m
+      memory: 50Mi
+
+applicationSet:
+  metrics:
+    serviceMonitor:
+      enabled: false

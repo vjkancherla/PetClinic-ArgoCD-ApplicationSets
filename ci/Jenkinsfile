@@ -1,0 +1,237 @@
+pipeline {
+  agent {
+    kubernetes {
+      yamlFile "infrastructure/jenkins/jenkins-agent-pod-template.yaml"
+    }
+  }
+
+  parameters {
+    booleanParam(name: 'RUN_BUILD', defaultValue: true, description: 'Run Maven build, test and package')
+    booleanParam(name: 'RUN_IMAGE_BUILD', defaultValue: true, description: 'Build and push container image')
+    booleanParam(name: 'UPDATE_ARGOCD', defaultValue: true, description: 'Update ArgoCD application with new image tag')
+  }
+
+  options {
+      disableConcurrentBuilds()
+      buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
+  }
+
+  environment {
+    PROJECT = "PetClinic"
+    GIT_COMMIT_HASH = sh(script: "git log -n 1 --pretty=format:'%H'", returnStdout: true).trim()
+    GIT_COMMIT_HASH_SHORT = "${GIT_COMMIT_HASH.take(8)}" 
+    IMAGE_REPO = "vjkancherla/petclinic"
+    
+    // ArgoCD deployment repository
+    DEPLOY_REPO = "https://github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets-Deploy.git"
+    
+    // Dynamic image tag based on build type
+    // Jenkins automatically sets CHANGE_ID for Pull Request builds
+    // CHANGE_ID = PR number (e.g., "123") when build triggered by PR
+    // CHANGE_ID = null for regular branch builds
+    IMAGE_TAG = script {
+      if (env.CHANGE_ID) {
+        // PR build: CHANGE_ID contains PR number
+        // Results in: pr-123-abc12345
+        return "pr-${env.CHANGE_ID}-${GIT_COMMIT_HASH_SHORT}"
+      } else if (env.BRANCH_NAME == 'main') {
+        // Main branch build: standard production tagging
+        // Results in: main-45-abc12345
+        return "main-${BUILD_NUMBER}-${GIT_COMMIT_HASH_SHORT}"
+      } else {
+        // Feature branch build: include branch name
+        // Results in: feature/auth-45-abc12345
+        return "${env.BRANCH_NAME}-${BUILD_NUMBER}-${GIT_COMMIT_HASH_SHORT}"
+      }
+    }()
+  }
+
+  stages {
+    stage("Maven Build & Test") {
+      when { expression { params.RUN_BUILD } }
+      steps {
+        container("maven") {
+          sh '''
+            echo "Building PetClinic application..."
+            cd app
+            mvn clean package
+            
+            echo "Build completed successfully!"
+            ls -la target/
+          '''
+      post {
+        always {
+          publishTestResults testResultsPattern: 'app/target/surefire-reports/*.xml'
+        }
+      }
+    }
+
+    stage("Build & Push Image") {
+      when { expression { params.RUN_IMAGE_BUILD } }
+      steps {
+        container("kaniko") {
+          sh '''
+            echo "Building Docker image: ${IMAGE_REPO}:${IMAGE_TAG}"
+            
+            /kaniko/executor --context ./app \
+            --dockerfile ./app/Dockerfile \
+            --destination ${IMAGE_REPO}:${IMAGE_TAG}
+            
+            echo "Successfully pushed image: ${IMAGE_REPO}:${IMAGE_TAG}"
+          '''
+        }
+      }
+    }
+
+    stage("Update ArgoCD Application") {
+      // This stage only runs for main branch builds (production deployments)
+      // It updates the ArgoCD Application spec in the deploy repository with the new image tag
+      // ArgoCD monitors this repo and will automatically sync the new image to production
+      when { 
+        allOf {
+          expression { params.UPDATE_ARGOCD }
+          branch 'main'
+        }
+      }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+          container("git") {
+            sh '''
+              echo "Updating ArgoCD application with image tag: ${IMAGE_TAG}"
+              echo "This implements GitOps workflow by updating the deployment repository"
+              echo "ArgoCD monitors this repo and will automatically deploy the new image"
+              
+              git config --global user.email "jenkins@petclinic.local"
+              git config --global user.name "Jenkins CI"
+              
+              git clone https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets-Deploy.git deploy-repo
+              cd deploy-repo
+              
+              echo "Current production application config:"
+              cat environments/production/petclinic.yaml
+              
+              sed -i "s/value: \\"main-.*\\"/value: \\"${IMAGE_TAG}\\"/" environments/production/petclinic.yaml
+              
+              echo "Updated production application config:"
+              cat environments/production/petclinic.yaml
+              
+              git add environments/production/petclinic.yaml
+              git commit -m "Update production image to ${IMAGE_TAG}
+              
+              Build: ${BUILD_NUMBER}
+              Commit: ${GIT_COMMIT_HASH}
+              Branch: ${BRANCH_NAME}
+              Image: ${IMAGE_REPO}:${IMAGE_TAG}
+              "
+              
+              git push https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets-Deploy.git main
+              
+              echo "Successfully updated ArgoCD application!"
+              echo "ArgoCD will automatically sync the new image: ${IMAGE_TAG}"
+              echo "Production deployment should begin within ArgoCD sync interval (typically 3 minutes)"
+            '''
+          }
+        }
+      }
+    }
+
+    stage("PR Build Info") {
+      // This stage runs only for Pull Request builds to provide information about preview deployments
+      // PR preview environments are optional and only created when 'preview' label is added to the PR
+      // The ApplicationSet monitors PRs with 'preview' label and automatically creates/destroys environments
+      when { 
+        allOf {
+          expression { params.RUN_IMAGE_BUILD }
+          expression { env.CHANGE_ID != null }
+        }
+      }
+      steps {
+        script {
+          echo """
+          PR Build Complete!
+          
+          Image Built: ${IMAGE_REPO}:${IMAGE_TAG}
+          PR Number: ${env.CHANGE_ID}
+          Branch: ${env.CHANGE_BRANCH}
+          Commit: ${GIT_COMMIT_HASH_SHORT}
+          
+          Preview Environment (Optional):
+          1. Add 'preview' label to your PR if you want a preview environment
+          2. ArgoCD ApplicationSet will deploy to: petclinic-pr-${env.CHANGE_ID}
+          3. Access via: kubectl port-forward svc/petclinic 8080:80 -n petclinic-pr-${env.CHANGE_ID}
+          4. Remove 'preview' label to cleanup the environment
+          
+          Note: Preview environments are optional and only created when 'preview' label is present
+          """
+        }
+      }
+    }
+
+    stage("Production Deploy Info") {
+      when { 
+        allOf {
+          expression { params.UPDATE_ARGOCD }
+          branch 'main'
+        }
+      }
+      steps {
+        script {
+          echo """
+          Production Deployment Initiated!
+          
+          Image: ${IMAGE_REPO}:${IMAGE_TAG}
+          Target: petclinic-production namespace
+          ArgoCD Sync: Automatic
+          
+          Monitor Deployment:
+          1. ArgoCD UI: Check 'petclinic-production' application
+          2. kubectl get pods -n petclinic-production
+          3. Access via: kubectl port-forward svc/petclinic 8080:80 -n petclinic-production
+          
+          Deployment should complete within 2-3 minutes
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      cleanWs()
+    }
+    }
+    success {
+      script {
+        if (env.CHANGE_ID) {
+          // PR build success
+          def message = """
+          PR Build Successful!
+          
+          Image: ${IMAGE_REPO}:${IMAGE_TAG}
+          Add 'preview' label to deploy preview environment (optional)
+          """
+          echo message
+        } else if (env.BRANCH_NAME == 'main') {
+          // Production build success
+          def message = """
+          Production Build & Deploy Successful!
+          
+          Image: ${IMAGE_REPO}:${IMAGE_TAG}
+          Deployed to: petclinic-production
+          """
+          echo message
+        }
+      }
+    }
+    failure {
+      script {
+        echo """
+        Build Failed!
+        
+        Check the logs above for details
+        Notify the development team
+        """
+      }
+    }
+  }
+}

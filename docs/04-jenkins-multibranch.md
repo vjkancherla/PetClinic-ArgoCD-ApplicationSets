@@ -8,7 +8,7 @@
     - Branch Sources
         - GitHub
             - select the GitHub credentials (create a new one if one doesn't exist)
-            - Repository HTTPS URL: https://github.com/vjkancherla/DevSecOps-ArgoCD
+            - Repository HTTPS URL: https://github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets
 
             - Behaviours
                 - Discover branches

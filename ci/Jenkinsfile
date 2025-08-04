@@ -66,11 +66,6 @@ pipeline {
           '''
         }
       }
-      post {
-        always {
-          publishTestResults testResultsPattern: 'app/target/surefire-reports/*.xml'
-        }
-      }
     }
 
     stage("Build & Push Image") {

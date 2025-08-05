@@ -24,29 +24,34 @@ pipeline {
     
     // ArgoCD deployment repository
     DEPLOY_REPO = "https://github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets-Deploy.git"
-    
-    // Dynamic image tag based on build type
-    // Jenkins automatically sets CHANGE_ID for Pull Request builds
-    // CHANGE_ID = PR number (e.g., "123") when build triggered by PR
-    // CHANGE_ID = null for regular branch builds
-    IMAGE_TAG = script {
-      if (env.CHANGE_ID) {
-        // PR build: CHANGE_ID contains PR number
-        // Results in: pr-123-abc12345
-        return "pr-${env.CHANGE_ID}-${GIT_COMMIT_HASH_SHORT}"
-      } else if (env.BRANCH_NAME == 'main') {
-        // Main branch build: standard production tagging
-        // Results in: main-45-abc12345
-        return "main-${BUILD_NUMBER}-${GIT_COMMIT_HASH_SHORT}"
-      } else {
-        // Feature branch build: include branch name
-        // Results in: feature/auth-45-abc12345
-        return "${env.BRANCH_NAME}-${BUILD_NUMBER}-${GIT_COMMIT_HASH_SHORT}"
-      }
-    }()
   }
 
   stages {
+    stage("Set Image Tag") {
+      steps {
+        script {
+          // Dynamic image tag based on build type
+          // Jenkins automatically sets CHANGE_ID for Pull Request builds
+          // CHANGE_ID = PR number (e.g., "123") when build triggered by PR
+          // CHANGE_ID = null for regular branch builds
+          if (env.CHANGE_ID) {
+            // PR build: CHANGE_ID contains PR number
+            // Results in: pr-123-abc12345
+            env.IMAGE_TAG = "pr-${env.CHANGE_ID}-${env.GIT_COMMIT_HASH_SHORT}"
+          } else if (env.BRANCH_NAME == 'main') {
+            // Main branch build: standard production tagging
+            // Results in: main-45-abc12345
+            env.IMAGE_TAG = "main-${BUILD_NUMBER}-${env.GIT_COMMIT_HASH_SHORT}"
+          } else {
+            // Feature branch build: include branch name
+            // Results in: feature/auth-45-abc12345
+            env.IMAGE_TAG = "${env.BRANCH_NAME}-${BUILD_NUMBER}-${env.GIT_COMMIT_HASH_SHORT}"
+          }
+          echo "Image tag set to: ${env.IMAGE_TAG}"
+        }
+      }
+    }
+
     stage("Maven Build & Test") {
       when { expression { params.RUN_BUILD } }
       steps {
@@ -80,6 +85,9 @@ pipeline {
       }
     }
 
+    // This stage runs only for Pull Request builds to provide information about preview deployments
+    // PR preview environments are optional and only created when 'preview' label is added to the PR
+    // The ApplicationSet monitors PRs with 'preview' label and automatically creates/destroys environments
     stage("Signal Image Ready for PR") {
       // RACE CONDITION SOLUTION:
       // Problem: ArgoCD ApplicationSet detects PR immediately and tries to deploy,
@@ -99,41 +107,35 @@ pipeline {
       }
       steps {
         withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
-          script {
-            // Check if PR has 'preview' label (user's intent to deploy preview)
-            def prHasPreviewLabel = sh(
-              script: """
-                curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
-                "https://api.github.com/repos/vjkancherla/PetClinic-ArgoCD-ApplicationSets/pulls/${env.CHANGE_ID}" | \
-                jq -r '.labels[].name' | grep -q '^preview\$' && echo 'true' || echo 'false'
-              """,
-              returnStdout: true
-            ).trim()
-            
-            if (prHasPreviewLabel == 'true') {
-              echo "PR has 'preview' label - user requested preview environment"
-              echo "Image ${IMAGE_REPO}:${IMAGE_TAG} has been successfully built and pushed"
-              echo "Adding 'image-ready' label to signal ArgoCD that deployment can proceed"
+          container("kubectl-helm") {
+            sh '''
+              # Check if PR has 'preview' label (user's intent to deploy preview)
+              PR_HAS_PREVIEW=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+                "https://api.github.com/repos/vjkancherla/PetClinic-ArgoCD-ApplicationSets/pulls/${CHANGE_ID}" | \
+                jq -r '.labels[].name' | grep -q '^preview$' && echo 'true' || echo 'false')
               
-              // Add 'image-ready' label to trigger ArgoCD ApplicationSet deployment
-              sh """
+              if [ "$PR_HAS_PREVIEW" = "true" ]; then
+                echo "PR has 'preview' label - user requested preview environment"
+                echo "Image ${IMAGE_REPO}:${IMAGE_TAG} has been successfully built and pushed"
+                echo "Adding 'image-ready' label to signal ArgoCD that deployment can proceed"
+                
+                # Add 'image-ready' label to trigger ArgoCD ApplicationSet deployment
                 curl -X POST \
-                -H "Authorization: token ${GITHUB_TOKEN}" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/vjkancherla/PetClinic-ArgoCD-ApplicationSets/issues/${env.CHANGE_ID}/labels" \
-                -d '{"labels":["image-ready"]}'
-              """
-              
-              echo "Successfully added 'image-ready' label to PR ${env.CHANGE_ID}"
-              echo "ArgoCD ApplicationSet will now detect both labels and deploy preview environment"
-              echo "Preview will be available at namespace: petclinic-pr-${env.CHANGE_ID}"
-              echo "Deployment should complete within 2-3 minutes"
-              
-            } else {
-              echo "PR does not have 'preview' label - no preview environment requested"
-              echo "Image ${IMAGE_REPO}:${IMAGE_TAG} built successfully but not signaling for deployment"
-              echo "To deploy preview: Add 'preview' label to PR and rebuild"
-            }
+                  -H "Authorization: token ${GITHUB_TOKEN}" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/vjkancherla/PetClinic-ArgoCD-ApplicationSets/issues/${CHANGE_ID}/labels" \
+                  -d '{"labels":["image-ready"]}'
+                
+                echo "Successfully added 'image-ready' label to PR ${CHANGE_ID}"
+                echo "ArgoCD ApplicationSet will now detect both labels and deploy preview environment"
+                echo "Preview will be available at namespace: petclinic-pr-${CHANGE_ID}"
+                echo "Deployment should complete within 2-3 minutes"
+              else
+                echo "PR does not have 'preview' label - no preview environment requested"
+                echo "Image ${IMAGE_REPO}:${IMAGE_TAG} built successfully but not signaling for deployment"
+                echo "To deploy preview: Add 'preview' label to PR and rebuild"
+              fi
+            '''
           }
         }
       }
@@ -151,8 +153,11 @@ pipeline {
       }
       steps {
         withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
-          container("git") {
+          container("kubectl-helm") {
             sh '''
+              # First check if git is available
+              which git || (echo "Git not found in kubectl-helm container" && exit 1)
+              
               echo "Updating ArgoCD application with image tag: ${IMAGE_TAG}"
               echo "This implements GitOps workflow by updating the deployment repository"
               echo "ArgoCD monitors this repo and will automatically deploy the new image"
@@ -191,38 +196,6 @@ pipeline {
       }
     }
 
-    stage("PR Build Info") {
-      // This stage runs only for Pull Request builds to provide information about preview deployments
-      // PR preview environments are optional and only created when 'preview' label is added to the PR
-      // The ApplicationSet monitors PRs with 'preview' label and automatically creates/destroys environments
-      when { 
-        allOf {
-          expression { params.RUN_IMAGE_BUILD }
-          expression { env.CHANGE_ID != null }
-        }
-      }
-      steps {
-        script {
-          echo """
-          PR Build Complete!
-          
-          Image Built: ${IMAGE_REPO}:${IMAGE_TAG}
-          PR Number: ${env.CHANGE_ID}
-          Branch: ${env.CHANGE_BRANCH}
-          Commit: ${GIT_COMMIT_HASH_SHORT}
-          
-          Preview Environment Status:
-          - If your PR has the 'preview' label, the 'image-ready' label has been added
-          - ArgoCD ApplicationSet will detect both labels and deploy to: petclinic-pr-${env.CHANGE_ID}
-          - Access via: kubectl port-forward svc/petclinic 8080:80 -n petclinic-pr-${env.CHANGE_ID}
-          - Deployment should be ready within 2-3 minutes
-          
-          To cleanup: Remove 'preview' label or close the PR
-          """
-        }
-      }
-    }
-
     stage("Production Deploy Info") {
       when { 
         allOf {
@@ -244,7 +217,7 @@ pipeline {
           2. kubectl get pods -n petclinic-production
           3. Access via: kubectl port-forward svc/petclinic 8080:80 -n petclinic-production
           
-          Deployment should complete within ArgoCD sync interval (typically 3 minutes)
+          Deployment should complete within 2-3 minutes
           """
         }
       }
@@ -255,48 +228,37 @@ pipeline {
     always {
       cleanWs()
     }
-    failure {
+    success {
       script {
         if (env.CHANGE_ID) {
-          // For PR builds, add a comment about the failure
-          withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
-            sh """
-              curl -X POST \
-              -H "Authorization: token ${GITHUB_TOKEN}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/vjkancherla/PetClinic-ArgoCD-ApplicationSets/issues/${env.CHANGE_ID}/comments" \
-              -d '{"body":"Build failed for commit ${GIT_COMMIT_HASH_SHORT}. Preview environment cannot be created until build succeeds."}'
-            """
-          }
+          // PR build success
+          def message = """
+          PR Build Successful!
+          
+          Image: ${IMAGE_REPO}:${IMAGE_TAG}
+          Preview deployment will start automatically if 'preview' label is present
+          """
+          echo message
+        } else if (env.BRANCH_NAME == 'main') {
+          // Production build success
+          def message = """
+          Production Build & Deploy Successful!
+          
+          Image: ${IMAGE_REPO}:${IMAGE_TAG}
+          Deployed to: petclinic-production
+          """
+          echo message
         }
-        
+      }
+    }
+    failure {
+      script {
         echo """
         Build Failed!
         
         Check the logs above for details
         Notify the development team
         """
-      }
-    }
-    success {
-      script {
-        if (env.CHANGE_ID) {
-          // PR build success
-          echo """
-          PR Build Successful!
-          
-          Image: ${IMAGE_REPO}:${IMAGE_TAG}
-          Preview deployment will start automatically if 'preview' label is present
-          """
-        } else if (env.BRANCH_NAME == 'main') {
-          // Production build success
-          echo """
-          Production Build & Deploy Successful!
-          
-          Image: ${IMAGE_REPO}:${IMAGE_TAG}
-          Deployed to: petclinic-production
-          """
-        }
       }
     }
   }

@@ -197,6 +197,7 @@ Install the following plugins via **Manage Jenkins → Manage Plugins**:
 - git-client:6.1.3
 - git:5.7.0
 - github:1.43.0
+- GitHub Branch Source Plugin Version 1834
 - kubernetes-client-api:6.10.0-251.v556f5f100500
 - kubernetes-credentials:192.v4d5b_1c429d17
 - kubernetes:4340.v345364d31a_2a_

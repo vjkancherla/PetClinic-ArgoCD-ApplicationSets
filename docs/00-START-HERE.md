@@ -10,8 +10,9 @@ This guide provides step-by-step instructions to set up a complete GitOps pipeli
 5. [Jenkins Configuration](#jenkins-configuration)
 6. [ArgoCD Configuration](#argocd-configuration)
 7. [Pipeline Creation](#pipeline-creation)
-8. [Verification](#verification)
-9. [Troubleshooting](#troubleshooting)
+8. [PR Preview Workflow Details](#pr-preview-workflow-details)
+9. [Verification](#verification)
+10. [Troubleshooting](#troubleshooting)
 
 ## Overview
 
@@ -21,6 +22,7 @@ This GitOps project demonstrates a complete CI/CD pipeline with:
 - **ArgoCD** for GitOps deployments and PR preview environments
 - **Container building** with Kaniko
 - **Multi-branch pipeline** support
+- **Two-label system** for preventing race conditions in PR previews
 
 ## Prerequisites
 
@@ -299,10 +301,71 @@ See [infrastructure/jenkins/jenkins-agent-pod-template.yaml](infrastructure/jenk
      - **Credentials**: Select `github-credentials`
      - **Repository HTTPS URL**: `https://github.com/vjkancherla/PetClinic-ArgoCD-ApplicationSets.git`
      - **Behaviors**:
-       - **Discover branches**: All Branches
-       - **Filter by name (with wildcards)**: Include `feature/*` and `main`
+       - **Discover branches**: `Exclude branches that are also filed as PRs`
+       - **Discover pull requests from origin**: `Merging the pull request with the current target branch revision`
+       - **Discover pull requests from forks** (Optional): `Merging the pull request with the current target branch revision`
+         - **Trust**: `From users with Admin or Write permission`
    - **Build Configuration**: by Jenkinsfile (located at `ci/Jenkinsfile`)
 5. Save the configuration
+
+### Jenkins Multibranch Pipeline Discovery Configuration
+
+Configure these behaviors to build only main branch and PRs:
+
+1. **Discover branches**
+   - Strategy: `Exclude branches that are also filed as PRs`
+
+2. **Discover pull requests from origin**  
+   - Strategy: `Merging the pull request with the current target branch revision`
+
+3. **Discover pull requests from forks** (Optional)
+   - Strategy: `Merging the pull request with the current target branch revision`
+   - Trust: `From users with Admin or Write permission`
+
+This prevents feature branches from being built directly while ensuring all PRs are detected.
+
+## PR Preview Workflow Details
+
+### Two-Label System for Race Condition Prevention
+
+To prevent image availability issues, we use a two-label coordination system:
+
+1. **Developer adds `preview` label** - Indicates desire for preview environment
+2. **Jenkins adds `image-ready` label** - Signals that image is built and pushed
+3. **ApplicationSet requires BOTH labels** - Ensures image exists before deployment
+
+### Timeline:
+- T+0: PR created, developer adds `preview` label
+- T+3-5min: Jenkins builds image and adds `image-ready` label  
+- T+5-6min: ArgoCD ApplicationSet detects both labels and deploys
+- T+6-8min: Preview environment ready
+
+### Benefits:
+- ✅ Eliminates "ImagePullBackOff" errors
+- ✅ Guaranteed image availability before deployment
+- ✅ Developer-controlled preview requests
+- ✅ Automatic cleanup when PR closed
+
+### Workflow Steps:
+
+#### Creating a Preview Environment
+1. Create feature branch and make changes
+2. Push branch and create Pull Request
+3. Add `preview` label to PR
+4. Jenkins will build and add `image-ready` label automatically
+5. ArgoCD will deploy to `petclinic-pr-{number}` namespace
+6. Access via: `kubectl port-forward svc/petclinic 8080:80 -n petclinic-pr-{number}`
+
+#### Cleaning Up Preview Environment  
+1. Remove `preview` label from PR, OR
+2. Close/merge the PR
+3. ArgoCD will automatically remove the application and namespace
+
+#### Production Deployment
+1. Merge PR to main branch
+2. Jenkins automatically builds and updates ArgoCD application
+3. ArgoCD syncs changes to production within 3 minutes
+4. Monitor: `kubectl get pods -n petclinic-production -w`
 
 ## Verification
 
@@ -341,10 +404,11 @@ pipeline {
 **PR Preview Environment:**
 1. Create feature branch and make changes
 2. Create Pull Request
-3. Jenkins builds image with PR-specific tag
-4. Add `preview` label to PR
-5. ArgoCD ApplicationSet creates preview environment
-6. Remove label or close PR to cleanup
+3. Add `preview` label to PR
+4. Jenkins builds image with PR-specific tag
+5. Jenkins adds `image-ready` label after successful build
+6. ArgoCD ApplicationSet creates preview environment
+7. Remove label or close PR to cleanup
 
 #### 11.3 Verify Services
 Check that all services are running:
@@ -485,13 +549,4 @@ kubectl logs -f <pod-name> -n jenkins
 kubectl port-forward -n argo-cd svc/dev-argo-cd-argocd-server 9080:80
 ```
 
-## Next Steps
-
-Once the setup is complete, you can:
-1. Create comprehensive Jenkinsfiles with additional build stages
-2. Customize Helm charts for different environments
-3. Implement advanced ArgoCD features (sync waves, hooks)
-4. Set up monitoring and alerting
-5. Add additional security scanning tools
-
-Your GitOps pipeline is now ready to build, test, and deploy applications with Git as the single source of truth for deployments!
+For more detailed troubleshooting, see [docs/10-troubleshooting-guide.md](docs/10-troubleshooting-guide.md).

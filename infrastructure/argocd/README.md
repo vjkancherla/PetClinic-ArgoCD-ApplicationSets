@@ -48,7 +48,6 @@ rm argocd-linux-amd64
 
 ## Setup ArgoCD to be able to talk to Git repos
 
-
 ```bash
 # Ensure credentials are loaded
 source .env.credentials
@@ -75,9 +74,9 @@ kubectl create secret generic github-token \
   -n argo-cd
 
 # Deploy applications from PetClinic-ArgoCD-ApplicationSets-Deploy repo
-kubectl apply -f petclinic-project.yaml
-kubectl apply -f environments-app.yaml
-kubectl apply -f applicationsets-app.yaml
+kubectl apply -n argo-cd -f petclinic-project.yaml
+kubectl apply -n argo-cd  -f environments-app.yaml
+kubectl apply -n argo-cd  -f applicationsets-app.yaml
 ```
 
 ## Verify Setup
